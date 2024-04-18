@@ -1,0 +1,47 @@
+-- QUERY QUE MENSURA CLIENTES ORDEM DOS RESGATES DENTRO E FORA DA CAMPANHA
+
+ with tb as (
+-- MAPEAMENTO DOS CPFs     
+select 
+--t1.id,
+t1.customer,
+t2.social_id,
+t1.source_id,
+t1.dt_reward,
+t2.card_product as variante,
+row_number() over (partition by customer order by  dt_reward asc) as rank -- CORRECAO NESSE CAMPO
+from "glue"."curated_d2dbanking"."loyalty_reward" t1
+left join glue.curated_d2dbanking.loyalty_customer t2 on t1.customer = t2.id 
+--where t1.created_at < timestamp '2024-01-31 00:00:00.000 UTC' and t2.created_at < timestamp '2024-01-31 00:00:00.000 UTC' ) -- NOVO ITEM 
+)
+,
+
+tb2 as (
+   
+select 
+*
+from tb)
+--where source_id = 'REWARD_POINTS_RAFFLE' )
+
+select * from tb2
+
+
+-- FIM
+
+/*
+
+-- CONSOLIDANDO O QTD DE CLIENTES, PEGANDO APENAS SEU PRIMEIRO RESGATE
+select
+count(distinct social_id) as primeiro_resgate,
+card_product as variante
+from tb2
+where rank = 1
+group by 2
+order by 1
+
+*/
+
+
+-- 07.02 = 10.771
+-- 08.02 = 12.822
+
