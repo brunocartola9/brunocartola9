@@ -1,0 +1,156 @@
+--- NESSA QUERY ADICIONAMOS SE O CLIENTE TEM LIMITE + ATIVO OU NAO (ULT COMPRA 45d) ::: fonte: CUBO_CONTA_CARTAO
+
+-- QTD DE NUMEROS DA SORTE
+with n_da_sorte as (
+select distinct 
+customer,
+sum(points) / 30 as numeros_da_sorte 
+from "glue"."curated_d2dbanking"."loyalty_reward" r
+where r.source_id = 'REWARD_POINTS_RAFFLE'
+group by customer),
+---------------------------------------------------------------------------------------------------------------------
+---------------------------------------------------------------------------------------------------------------------
+-- TOTAL DE PONTOS RESGATADOS
+pontos_resgatados as (
+select distinct
+customer,
+sum(points) as pontos_resgatados_geral,
+sum(amount_per_point) as custo_ponto_resgatado 
+from "glue"."curated_d2dbanking"."loyalty_reward"
+group by customer),
+---------------------------------------------------------------------------------------------------------------------
+-- TOTAL DE PONTOS GERADOS
+pontos_gerados as (
+select distinct
+customer, 
+sum (points) as pontos_gerados,
+sum(amount_per_point) as custo_ponto_gerado 
+from "glue"."curated_d2dbanking"."loyalty_point" 
+group by customer),
+---------------------------------------------------------------------------------------------------------------------
+-- MARCACAO DE QUEM RESGATOU E QUEM NAO RESGATOU
+flag_resgate as (
+select distinct 
+tb1.social_id as social_id,
+case when tb2.points >= 1 then 'resgatou'
+     when tb2.points = 0 then 'nao_resgatou'  
+        end as flag_resgate
+FROM "glue"."curated_d2dbanking"."loyalty_customer" tb1
+left join "glue"."curated_d2dbanking"."loyalty_reward" tb2 
+on tb1.id = tb2.customer
+group by 1,2),
+---------------------------------------------------------------------------------------------------------------------
+
+/*  SELECAO NA CONTA_CARTAO + ATRIBUICAO DE VALOR PARA VARIANTE */
+ tb as ( 
+select 
+        id_cliente,
+        ds_segmento_interno,
+        ds_debito_automatico,
+        ds_produto,
+        case 
+        when ds_produto = 'STANDARD' THEN 0
+        when ds_produto = 'GOLD'     THEN 1
+        when ds_produto = 'PLATINUM' THEN 2
+        when ds_produto = 'BLACK'    THEN 3
+        when ds_produto = 'WIN'      THEN 4
+        end maior_variante,
+        case when vl_limite_clean = 0 then 'zero_limite' 
+        when vl_limite_clean > 0 then 'tem_limite' 
+        end limite, -- NOVO ITEM
+        case when ds_status_funil = '5. Com compra ult. 45d' then 'ATIVO' else 'INATIVO' end ativo, -- NOVO ITEM
+        max (dt_ref) as ultima_data
+
+from glue.analytics_meios_pagamento.cubo_conta_cartao
+group by 1,2,3,4,5,6,7
+),
+
+/*  CLASSIFICA A VARIANTE MAIS 'PREMIUM' = 1 */
+tb2 as (
+select 
+*,
+row_number() over (partition by id_cliente order by  maior_variante desc ) as rank
+from tb )
+
+
+/*  PARTE FINAL, CRIA AS VISOES/QUEBRAS */
+select  --date_add(day, -1) as dt_ref,
+        aceite,
+        flag_pontuou,
+        flag_resgatou,
+        grupo_interloop,
+        variante,
+        deb_automat,
+        segmento_interno,
+        flag_limite, -- NOVO ITEM
+        flag_ativo, -- NOVO ITEM
+        case when pontos = 0 then '00. 0 pontos'
+            when pontos < 15 then '01. De 1 a 14 pontos'
+            when pontos < 30 then '02. De 15 a 29 pontos'
+            when pontos < 60 then '03. De 30 a 59 pontos'
+            when pontos < 90 then '04. De 60 a 89 pontos'
+            when pontos < 120 then '05. De 90 a 119 pontos' 
+            when pontos < 150 then '06. De 120 a 149 pontos'
+            when pontos < 180 then '07. De 150 a 179 pontos'
+            when pontos < 200 then '08. De 180 a 199 pontos'
+            when pontos < 1000 then '09. De 200 a 999 pontos'
+            when pontos < 2000 then '10. De 1000 a 1999 pontos'
+            when pontos < 3000 then '11. De 2000 a 2999 pontos'
+            when pontos < 4000 then '12. De 3000 a 3999 pontos'
+            when pontos < 5000 then '13. De 4000 a 4999 pontos'
+            when pontos >= 5000 then '14. 5000 ou mais pontos'
+       end as perfil,
+       --DATE('-1') as dt_ref, 
+        count(*) as clientes,
+        sum(pontos) as Saldo_pontos,
+        sum(n_sorte) as n_sorte,
+        sum(qtd_cli_n_sorte) as qtd_cli_n_sorte,
+        sum(p_resgatados) as p_resgatados,
+        sum(p_gerados) as p_gerados,
+        sum(custo_resgate) as custo_resgate, 
+        sum(custo_gerado) as custo_gerado 
+        
+
+from (
+
+SELECT distinct 
+        t1.social_id,
+        t1.level             as grupo_interloop,
+        t1.card_product      as variante,
+        t3.ds_debito_automatico as deb_automat,
+        t3.ds_segmento_interno  as segmento_interno,
+        t3.limite as flag_limite, -- NOVO ITEM
+        t3.ativo  as flag_ativo, -- NOVO ITEM
+        case when t2.term in (1,34)  then 'opt-in'
+        else 'opt-out'
+        end as aceite,
+        case when t1.points = 0 then 'nao_pontuou' else 'pontuou'
+        end as flag_pontuou,
+        case when t7.flag_resgate = 'nao_resgatou' then 0
+            when t7.flag_resgate = 'resgatou'      then 1 
+            else 0 end  as flag_resgatou,
+       sum(t1.points)       as pontos,
+       sum(t4.numeros_da_sorte) as n_sorte,
+       count(distinct t4.customer) as qtd_cli_n_sorte,
+       sum(t5.pontos_resgatados_geral) as p_resgatados,
+       sum(t6.pontos_gerados) as p_gerados,
+       sum(t5.custo_ponto_resgatado) as custo_resgate, 
+       sum(t6.custo_ponto_gerado)    as custo_gerado   
+         
+    from glue.curated_d2dbanking.loyalty_customer t1
+    left join glue.curated_d2dbanking.loyalty_acceptance_term t2 on t1.id = t2.customer
+    left join tb2 t3 on t1.social_id = t3.id_cliente
+    left join n_da_sorte t4 on t1.id = t4.customer
+    left join pontos_resgatados t5 on t1.id = t5.customer
+    left join pontos_gerados t6 on t1.id = t6.customer
+    left join flag_resgate t7 on t1.social_id = t7.social_id
+
+    where t3.rank = 1
+    --and t1.updated_at < (timestamp '2024-01-29 00:00:00.000 UTC') -- filtro de data
+    group by  1,2,3,4,5,6,7,8,9,10
+    )
+    group by 1,2,3,4,5,6,7,8,9,10
+
+
+---- FIM
+
