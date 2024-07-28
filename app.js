@@ -1,1 +1,0 @@
-console.log ("Olá mundo com Git 2!")
